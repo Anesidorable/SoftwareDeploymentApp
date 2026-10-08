@@ -1,0 +1,23 @@
+{
+  "name": "my-app",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "dev": "concurrently -n api,web -c blue,green \"npm run dev --prefix server\" \"npm run dev --prefix client\""
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Anesidorable/my-app.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/Anesidorable/my-app/issues"
+  },
+  "homepage": "https://github.com/Anesidorable/my-app#readme",
+  "description": "",
+  "devDependencies": {
+    "concurrently": "^10.0.5"
+  }
+}
