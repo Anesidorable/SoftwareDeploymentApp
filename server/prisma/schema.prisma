@@ -1,0 +1,9 @@
+// use prisma-8
+
+model GroceryList {
+  id  Int @id @default(autoincrement())
+  item String
+  count Float
+  notes String?
+  ticked Boolean @default(false)
+}
