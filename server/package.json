@@ -5,16 +5,25 @@
   "scripts": {
     "start": "node index.js",
     "dev": "nodemon index.js",
-    "test": "node --test"
+    "test": "node --test",
+    "postinstall": "prisma skills sync || exit 0",
+    "contract:emit": "prisma contract emit"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "description": "",
+  "type": "module",
   "dependencies": {
+    "prisma": "^8.0.0-rc.22",
+    "@prisma/client": "^7.10.0",
+    "@prisma/orm-postgres": "^8.0.0-rc.17",
+    "dotenv": "^18.0.7",
     "express": "^5.2.1"
   },
   "devDependencies": {
+    "@prisma/cli-engine": "^0.7.0",
+    "@types/node": "^26.6.5",
     "nodemon": "^3.1.14"
   }
 }
