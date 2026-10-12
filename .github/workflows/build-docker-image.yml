@@ -18,14 +18,18 @@ jobs:
       matrix:
         include:
           - name: api
-            context: ./server
+            context: ./api
           - name: web
-            context: ./client
+            context: ./web
 
     steps:
       - uses: actions/checkout@v4
 
       - uses: docker/setup-buildx-action@v3
+
+      - name: Lowercase repo name
+        id: repo
+        run: echo "name=${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
 
       - name: Log in to GHCR
         if: github.event_name != 'pull_request'
@@ -41,7 +45,7 @@ jobs:
           context: ${{ matrix.context }}
           push: ${{ github.event_name != 'pull_request' }}
           tags: |
-            ghcr.io/${{ github.repository }}/${{ matrix.name }}:latest
-            ghcr.io/${{ github.repository }}/${{ matrix.name }}:${{ github.sha }}
+            ghcr.io/${{ steps.repo.outputs.name }}/${{ matrix.name }}:latest
+            ghcr.io/${{ steps.repo.outputs.name }}/${{ matrix.name }}:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
