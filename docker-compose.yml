@@ -17,7 +17,7 @@ services:
       retries: 10
 
   api:
-    build: ./server
+    image: ghcr.io/anesidorable/softwaredeploymentapp/api:latest
     environment:
       HOST: 0.0.0.0
       PORT: "5000"
@@ -36,7 +36,7 @@ services:
         condition: service_healthy
 
   web:
-    build: ./client
+    image: ghcr.io/anesidorable/softwaredeploymentapp/web:latest
     environment:
       API_UPSTREAM: api:5000
     ports: ["8080:8080"]
