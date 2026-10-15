@@ -1,0 +1,115 @@
+name: Deploy To Testing
+ 
+on:
+  workflow_run:
+    workflows: ["Build Docker Image"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Image tag (commit SHA) to deploy, for manual redeploys or rollbacks
+        required: true
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AWS_REGION: ap-southeast-2
+  AWS_ROLE_ARN: arn:aws:iam::960607644670:role/github-actions-ecr
+  STACK_NAME: app-stack
+  TEMPLATE: infra/cloudformationtemplate.yaml
+
+jobs:
+  deploy:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    concurrency:
+      group: deploy-test
+      cancel-in-progress: false
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+ 
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          
+      - name: Deploy CloudFormation stack
+        uses: aws-actions/aws-cloudformation-github-deploy@v2.2.0
+        with:
+          name: ${{ env.STACK_NAME }}
+          template: ${{ env.TEMPLATE }}
+          capabilities: CAPABILITY_IAM
+          fail-on-empty-changeset: false
+ 
+      - name: Find the EC2 instance from the stack outputs
+        id: stack
+        run: |
+          INSTANCE_ID=$(aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --query "Stacks[0].Outputs[?OutputKey=='InstanceId'].OutputValue" \
+            --output text)
+ 
+          if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "None" ]; then
+            echo "No InstanceId output found on stack $STACK_NAME" >&2
+            exit 1
+          fi
+ 
+          echo "instance_id=$INSTANCE_ID" >> "$GITHUB_OUTPUT"
+          
+      - name: Wait for the instance to be reachable by SSM
+        env:
+          INSTANCE_ID: ${{ steps.stack.outputs.instance_id }}
+        run: |
+          PING=None
+          for i in $(seq 1 40); do
+            PING=$(aws ssm describe-instance-information \
+              --filters "Key=InstanceIds,Values=$INSTANCE_ID" \
+              --query "InstanceInformationList[0].PingStatus" --output text 2>/dev/null || echo None)
+            [ "$PING" = "Online" ] && break
+            sleep 10
+          done
+          echo "SSM ping status: $PING"
+          test "$PING" = "Online"
+          
+      - name: Deploy the new image via SSM
+        env:
+          INSTANCE_ID: ${{ steps.stack.outputs.instance_id }}
+          IMAGE_TAG: ${{github.event.inputs.tag || github.event.workflow_run.head_sha }}
+        run: |
+          echo "Deploying tag $IMAGE_TAG to $INSTANCE_ID"
+          CMD_ID=$(aws ssm send-command \
+            --instance-ids "$INSTANCE_ID" \
+            --document-name AWS-RunShellScript \
+            --comment "Deploy $IMAGE_TAG" \
+            --parameters "{\"commands\":[\"cloud-init status --wait || true\",\"/opt/app/deploy.sh $IMAGE_TAG\"]}" \
+            --query Command.CommandId --output text)
+            
+          STATUS=Pending
+          for i in $(seq 1 120); do
+            STATUS=$(aws ssm get-command-invocation \
+              --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" \
+              --query Status --output text 2>/dev/null || echo Pending)
+            case "$STATUS" in
+              Success|Failed|Cancelled|TimedOut) break ;;
+            esac
+            sleep 5
+          done
+          
+          aws ssm get-command-invocation \
+            --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" \
+            --query '[StandardOutputContent, StandardErrorContent]' --output text
+
+          echo "Deployment successful"
+
+
