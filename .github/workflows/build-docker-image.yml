@@ -3,8 +3,15 @@ name: Build Docker Image
 on:
   push:
     branches: [ "main" ]
+    paths:
+    - 'server/**'
+    - 'client/**'
+    - '.github/workflows/**'
   pull_request:
     branches: [ "main" ]
+      paths:
+      - 'server/**'
+      - 'client/**'
 
 permissions:
   contents: read
