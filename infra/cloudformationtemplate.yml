@@ -1,0 +1,122 @@
+# In order for this to work with your AWS account, you'll need an IAM user
+# with the following permissions: AmazonEC2FullAccess, AmazonSSMReadOnlyAccess, 
+# AWSCloudFormationFullAccess, IAMFullAccess
+
+#  You'll also need to get permission to download the images from the ECR, leave your AWS
+# account ID in discord and i'll setup a policy to allow your account to download the images.
+
+
+Parameters:
+  InstanceType:
+    Type: String
+    Default: t3.small
+  RootVolumeSize:
+    Type: Number
+    Default: 20
+    Description: Root EBS volume size in GiB
+  WebContainerPort:
+    Type: Number
+    Default: 8080
+  ApiContainerPort:
+    Type: Number
+    Default: 5000
+  ImageTag:
+    Type: String
+    Default: latest
+    Description: Image tag pulled on first boot
+  Registry:
+    Type: String
+    Default: 960607644670.dkr.ecr.ap-southeast-2.amazonaws.com
+
+Resources:
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref InstanceRole
+ 
+  Ec2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: HTTP and HTTPS access
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+
+  Ec2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}}'
+      InstanceType: !Ref InstanceType
+      IamInstanceProfile: !Ref InstanceProfile
+      SecurityGroupIds:
+        - !GetAtt Ec2SecurityGroup.GroupId
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: !Ref RootVolumeSize
+            VolumeType: gp3
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -euxo pipefail
+ 
+          dnf update -y
+          dnf install -y docker
+          systemctl enable --now docker
+ 
+          mkdir -p /opt/app
+          cat > /opt/app/deploy.sh <<'SCRIPT'
+          #!/bin/bash
+          set -euo pipefail
+          TAG=$1
+          aws ecr get-login-password --region ${AWS::Region} \
+            | docker login --username AWS --password-stdin ${Registry}
+ 
+          docker pull ${Registry}/app/api:$TAG
+          docker pull ${Registry}/app/web:$TAG
+ 
+          docker network create appnetwork 2>/dev/null || true
+          docker rm -f api web 2>/dev/null || true
+ 
+          docker run -d --name api --network appnetwork --restart unless-stopped \
+            -p 5000:${ApiContainerPort} ${Registry}/app/api:$TAG
+          docker run -d --name web --network appnetwork --restart unless-stopped \
+            -p 80:${WebContainerPort} ${Registry}/app/web:$TAG
+ 
+          docker image prune -f
+          SCRIPT
+          chmod +x /opt/app/deploy.sh
+ 
+          /opt/app/deploy.sh ${ImageTag}
+
+  ElasticIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      InstanceId: !Ref Ec2Instance
+
+Outputs:
+  InstanceId:
+    Value: !Ref Ec2Instance
+  PublicIp:
+    Value: !Ref ElasticIP
