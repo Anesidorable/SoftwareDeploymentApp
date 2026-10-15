@@ -4,12 +4,12 @@ on:
   push:
     branches: [ "main" ]
     paths:
-    - 'server/**'
-    - 'client/**'
-    - '.github/workflows/**'
+      - 'server/**'
+      - 'client/**'
+      - '.github/workflows/**'
   pull_request:
     branches: [ "main" ]
-      paths:
+    paths:
       - 'server/**'
       - 'client/**'
 
