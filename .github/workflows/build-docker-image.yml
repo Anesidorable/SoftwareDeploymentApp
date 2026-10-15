@@ -9,6 +9,11 @@ on:
 permissions:
   contents: read
   packages: write
+  id-token: write 
+
+env:
+  AWS_REGION: ap-southeast-2
+  ECR_REGISTRY: 960607644670.dkr.ecr.ap-southeast-2.amazonaws.com
 
 jobs:
   build:
@@ -40,6 +45,17 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Configure AWS credentials
+        if: github.event_name != 'pull_request'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::960607644670:role/github-actions-ecr
+          aws-region: ${{ env.AWS_REGION }}  
+
+      - name: Log in to Amazon ECR
+        if: github.event_name != 'pull_request'
+        uses: aws-actions/amazon-ecr-login@v2
+
       - name: Build and push ${{ matrix.name }}
         uses: docker/build-push-action@v6
         with:
@@ -48,5 +64,7 @@ jobs:
           tags: |
             ghcr.io/${{ steps.repo.outputs.name }}/${{ matrix.name }}:latest
             ghcr.io/${{ steps.repo.outputs.name }}/${{ matrix.name }}:${{ github.sha }}
+            ${{ env.ECR_REGISTRY }}/app/${{ matrix.name }}:latest
+            ${{ env.ECR_REGISTRY }}/app/${{ matrix.name }}:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
