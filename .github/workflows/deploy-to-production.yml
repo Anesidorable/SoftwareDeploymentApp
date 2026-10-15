@@ -1,4 +1,4 @@
-name: Deploy To Testing
+name: Deploy To Production
  
 on:
   workflow_run:
@@ -19,7 +19,7 @@ env:
   AWS_REGION: ap-southeast-2
   AWS_ROLE_ARN: arn:aws:iam::960607644670:role/github-actions-ecr
   STACK_NAME: app-stack
-  TEMPLATE: infra/cloudformationtemplate.yaml
+  TEMPLATE: infra/cloudformationtemplate.yml
 
 jobs:
   deploy:
