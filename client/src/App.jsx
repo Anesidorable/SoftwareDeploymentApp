@@ -250,7 +250,7 @@ function App() {
         <div className="brand">
           <div className="brand-icon">✳</div>
           <div>
-            <div className="brand-name">freshlist<span>.</span></div>
+            <div className="brand-name">GroceryList<span>.</span></div>
             <div className="brand-caption">Your shopping companion</div>
           </div>
         </div>
@@ -395,7 +395,7 @@ function App() {
                 <input
                   id="item-name"
                   type="text"
-                  placeholder="e.g. Fresh strawberries"
+                  placeholder="e.g. Strawberries"
                   value={newItem}
                   maxLength={100}
                   onChange={(event) => setNewItem(event.target.value)}
@@ -541,10 +541,6 @@ function App() {
             )}
           </section>
 
-          <footer className="page-footer">
-            <span>freshlist. — Your everyday shopping companion</span>
-            <span>Built with React + Vite</span>
-          </footer>
         </div>
       </main>
     </div>
