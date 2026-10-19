@@ -22,17 +22,43 @@ const categoryIcons = {
   Other: '🛒',
 }
 
+
 function normaliseItem(item, index) {
   return {
     id: item.id ?? `api-${index}`,
-    name: item.name ?? item.title ?? item.itemName ?? 'Unnamed item',
-    quantity: item.quantity ?? 1,
-    category: categories.includes(item.category)
-      ? item.category
+    name: item.name ?? item.item ?? 'Unnamed item',
+    quantity: item.quantity ?? item.count ?? 1,
+    category: categories.includes(item.category ?? item.notes)
+      ? (item.category ?? item.notes)
       : 'Other',
-    purchased: Boolean(item.purchased ?? item.completed ?? false),
+    purchased: Boolean(
+      item.purchased ?? item.ticked ?? false
+    ),
   }
 }
+
+
+async function apiRequest(url, options = {}) {
+  const response = await fetch(url, {
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      ...options.headers,
+    },
+  })
+
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}))
+    throw new Error(data.error || `Request failed (${response.status})`)
+  }
+
+  if (response.status === 204) {
+    return null
+  }
+
+  return response.json()
+}
+
 
 function App() {
   const [items, setItems] = useState([])
@@ -106,51 +132,117 @@ function App() {
       .filter((group) => group.items.length > 0)
   }, [filteredItems])
 
-  function showNotice() {
-    setNotice('Changes are local only until the API supports saving items.')
-  }
-
-  function addItem(event) {
+  
+  async function addItem(event) {
     event.preventDefault()
 
     const name = newItem.trim()
-    if (!name) return
+    const quantity = Number(newQuantity)
 
-    const item = {
-      id: crypto.randomUUID(),
-      name,
-      quantity: Math.max(1, Number(newQuantity) || 1),
-      category: newCategory,
-      purchased: false,
+    if (!name || !Number.isInteger(quantity) || quantity < 1 || quantity > 999) {
+      setError('Enter an item name and a valid quantity between 1 and 999.')
+      return
     }
 
-    setItems((current) => [item, ...current])
-    setNewItem('')
-    setNewQuantity(1)
-    setFilter('All')
-    showNotice()
+    try {
+      const savedItem = await apiRequest('/api/list', {
+        method: 'POST',
+        body: JSON.stringify({
+          name,
+          quantity,
+          category: newCategory,
+        }),
+      })
+
+      setItems((current) => [normaliseItem(savedItem), ...current])
+      setNewItem('')
+      setNewQuantity(1)
+      setFilter('All')
+      setError('')
+      setNotice('Item saved successfully.')
+    } catch (err) {
+      setError(err.message)
+    }
   }
 
-  function togglePurchased(id) {
-    setItems((current) =>
-      current.map((item) =>
-        item.id === id
-          ? { ...item, purchased: !item.purchased }
-          : item
+  async function togglePurchased(id) {
+    const item = items.find((entry) => entry.id === id)
+    if (!item) return
+
+    try {
+      const updatedItem = await apiRequest(`/api/list/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          purchased: !item.purchased,
+        }),
+      })
+
+      setItems((current) =>
+        current.map((entry) =>
+          entry.id === id ? normaliseItem(updatedItem) : entry
+        )
       )
-    )
-    showNotice()
+
+      setError('')
+      setNotice('Item updated successfully.')
+    } catch (err) {
+      setError(err.message)
+    }
   }
 
-  function deleteItem(id) {
-    setItems((current) => current.filter((item) => item.id !== id))
-    showNotice()
+  async function deleteItem(id) {
+    try {
+      await apiRequest(`/api/list/${id}`, {
+        method: 'DELETE',
+      })
+
+      setItems((current) =>
+        current.filter((item) => item.id !== id)
+      )
+
+      setError('')
+      setNotice('Item removed successfully.')
+    } catch (err) {
+      setError(err.message)
+    }
   }
 
-  function clearPurchased() {
-    setItems((current) => current.filter((item) => !item.purchased))
-    showNotice()
+  async function clearPurchased() {
+    const purchasedItems = items.filter((item) => item.purchased)
+
+    try {
+      const results = await Promise.allSettled(
+        purchasedItems.map((item) =>
+          apiRequest(`/api/list/${item.id}`, {
+            method: 'DELETE',
+          })
+        )
+      )
+
+      const deletedIds = purchasedItems
+        .filter((_, index) => results[index].status === 'fulfilled')
+        .map((item) => item.id)
+
+      setItems((current) =>
+        current.filter((item) => !deletedIds.includes(item.id))
+      )
+
+      const failures = results.filter(
+        (result) => result.status === 'rejected'
+      )
+
+      if (failures.length > 0) {
+        setError(`${failures.length} item(s) could not be removed.`)
+        setNotice('')
+      } else {
+        setError('')
+        setNotice('Purchased items cleared successfully.')
+      }
+    } catch (err) {
+      setError(err.message)
+    }
   }
+
 
   return (
     <div className="app-shell">
