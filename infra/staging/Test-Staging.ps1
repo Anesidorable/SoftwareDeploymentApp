@@ -29,6 +29,16 @@ $null=Wait-StagingCommand -Pause {} -GetInvocation {
 }
 if ($script:polls -ne 3) { throw 'Propagation/in-progress handling failed' }
 Write-Host 'PowerShell parsing and SSM success/failure/timeout/propagation tests passed.'
+$fixtureRuntime='sha256:' + ('a' * 64)
+$fixtureIndex=@{mediaType='application/vnd.oci.image.index.v1+json';manifests=@(@{
+    digest=$fixtureRuntime;platform=@{os='linux';architecture='amd64'}
+})} | ConvertTo-Json -Depth 8 -Compress
+$fixtureIndexDigest='sha256:' + [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($fixtureIndex))).ToLowerInvariant()
+$null=Assert-StagingImageIndex -ManifestJson $fixtureIndex -ExpectedDigest $fixtureIndexDigest -ExpectedRuntimeDigest $fixtureRuntime
+Expect-Failure { Assert-StagingImageIndex -ManifestJson $fixtureIndex -ExpectedDigest ('sha256:' + ('b' * 64)) -ExpectedRuntimeDigest $fixtureRuntime } 'content'
+Expect-Failure { Assert-StagingImageIndex -ManifestJson $fixtureIndex -ExpectedDigest $fixtureIndexDigest -ExpectedRuntimeDigest ('sha256:' + ('c' * 64)) } 'linux/amd64'
+Write-Host 'Immutable index hash and locked amd64 manifest checks passed.'
+
 if (-not $Containers) { return }
 function Invoke-TestDocker([string[]]$Arguments) {
     $output=& docker.exe @Arguments 2>&1
@@ -57,10 +67,10 @@ function Start-TestDb {
     throw 'Disposable test DB did not become ready'
 }
 try {
-    $null=Invoke-TestDocker -Arguments @('pull',$api)
-    $null=Invoke-TestDocker -Arguments @('pull',$web)
+    $null=Invoke-TestDocker -Arguments @('pull','--platform','linux/amd64',$api)
+    $null=Invoke-TestDocker -Arguments @('pull','--platform','linux/amd64',$web)
     $null=Invoke-TestDocker -Arguments @('pull',$lock.postgres)
-    Get-Content (Join-Path $PSScriptRoot 'deploy.sh') -Raw | & docker.exe run --rm -i --entrypoint bash $lock.postgres -n
+    (Get-Content (Join-Path $PSScriptRoot 'deploy.sh') -Raw).Replace("`r`n","`n") | & docker.exe run --rm -i --entrypoint bash $lock.postgres -n
     if ($LASTEXITCODE) { throw 'Bash syntax validation failed' }
     $null=Invoke-TestDocker -Arguments @('network','create',$prefix)
     $null=Invoke-TestDocker -Arguments @('volume','create',$prefix)
@@ -101,6 +111,9 @@ try {
         Start-Sleep -Seconds 1
     }
     if (-not $persisted) { throw 'Database persistence check failed' }
+    $null=Invoke-TestDocker -Arguments (@('run','--rm','--network',$prefix,'--log-driver','none')+$apiEnv+@($api,'npx','--no-install','prisma','db','migrate'))
+    $items=Invoke-RestMethod "$url/api/list" -TimeoutSec 3
+    if (@($items | Where-Object item -eq 'staging-persistence-fixture').Count -ne 1) { throw 'Migration rerun did not preserve fixture data' }
     Write-Host 'Exact published images passed: actual Prisma migration, special-character password, frontend, API/database, proxy and DB container replacement persistence.'
 } finally {
     # Delete only resources named by this test's unique prefix.

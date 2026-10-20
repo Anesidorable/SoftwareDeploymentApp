@@ -25,10 +25,16 @@ for attempt in $(seq 1 60); do
 done
 [ -b "$device" ] || { echo "Expected Staging EBS volume not found"; exit 1; }
 fstype=$(blkid -s TYPE -o value "$device" || true)
-if [ -z "$fstype" ]; then
+expected_uuid=$(python3 -c 'import json; print(json.load(open("config.json")).get("existingFilesystemUuid",""))')
+if [ -n "$expected_uuid" ]; then
+  # A resumed deployment is forbidden from initializing or formatting any disk.
+  [ "$fstype" = ext4 ] || { echo "Resume requires the existing ext4 filesystem"; exit 1; }
+  [ "$(blkid -s UUID -o value "$device")" = "$expected_uuid" ] || { echo "Resume filesystem UUID mismatch"; exit 1; }
+elif [ -z "$fstype" ]; then
   # Refuse a disk containing partitions or other signatures.
   [ "$(lsblk -nr "$device" | wc -l)" -eq 1 ]
-  [ -z "$(wipefs -n --noheadings -o TYPE "$device")" ]
+  signatures=$(wipefs --no-act --noheadings --output TYPE "$device")
+  [ -z "$signatures" ]
   mkfs.ext4 -q "$device"
 elif [ "$fstype" != ext4 ]; then
   echo "Refusing unexpected data filesystem"; exit 1
@@ -67,6 +73,7 @@ UNIT
 systemctl daemon-reload
 systemctl enable grocery-staging-secrets.service >/dev/null
 systemctl restart grocery-staging-secrets.service
+systemctl start docker
 export DOCKER_CONFIG
 DOCKER_CONFIG=$(mktemp -d /run/grocery-staging-auth.XXXXXX)
 trap 'rm -rf -- "$DOCKER_CONFIG"' EXIT
@@ -80,6 +87,8 @@ docker network inspect grocery-staging >/dev/null 2>&1 || docker network create 
 docker rm -f staging-db >/dev/null 2>&1 || true
 docker run -d --name staging-db --network grocery-staging --network-alias db \
   --restart unless-stopped --log-driver none \
+  --health-cmd="pg_isready -U grocery_staging -d grocery_staging" \
+  --health-interval=10s --health-timeout=5s --health-retries=6 \
   --mount type=bind,src=/srv/grocery-staging/postgres,dst=/var/lib/postgresql/data \
   --mount type=bind,src=/run/grocery-staging/db-password,dst=/run/secrets/db-password,readonly \
   -e POSTGRES_PASSWORD_FILE=/run/secrets/db-password \
@@ -103,6 +112,8 @@ if ! docker run --rm --network grocery-staging --log-driver none \
 fi
 docker run -d --name staging-api --network grocery-staging --network-alias api \
   --restart unless-stopped --log-driver none \
+  --health-cmd="node -e \"fetch('http://127.0.0.1:5000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\"" \
+  --health-interval=10s --health-timeout=5s --health-retries=6 \
   --env-file /run/grocery-staging/api.env "$api" node index.js >/dev/null
 healthy=0
 for attempt in $(seq 1 60); do
@@ -117,6 +128,8 @@ for attempt in $(seq 1 60); do
 done
 [ "$healthy" -eq 1 ] || { echo "API/database health timed out"; exit 1; }
 docker run -d --name staging-web --network grocery-staging --restart unless-stopped \
+  --health-cmd="wget -q -O /dev/null http://127.0.0.1:8080/" \
+  --health-interval=10s --health-timeout=5s --health-retries=6 \
   -e API_UPSTREAM=api:5000 -p 80:8080 "$web" >/dev/null
 python3 - <<'PY'
 import json, time, urllib.request
@@ -132,6 +145,7 @@ for attempt in range(60):
 else:
     raise SystemExit("Web proxy health timed out")
 PY
+python3 /opt/grocery-staging/verify.py
 cp config.json "/srv/grocery-staging/releases/$stamp.json"
 cp config.json /srv/grocery-staging/releases/current.json
 echo "Staging deployment successful: $release; database, API and web proxy verified."

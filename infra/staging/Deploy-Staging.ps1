@@ -2,6 +2,10 @@
 [CmdletBinding()]
 param(
     [switch]$ValidateOnly,
+    [switch]$ResumeExisting,
+    [string]$ExpectedInstanceId,
+    [string]$ExpectedVolumeId,
+    [string]$ExpectedFilesystemUuid,
     [string]$Profile = 'learnerlab',
     [ValidateSet('us-east-1')][string]$Region = 'us-east-1',
     [ValidateSet('grocery-staging')][string]$StackName = 'grocery-staging',
@@ -16,6 +20,12 @@ param(
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+if ($ResumeExisting -and (
+    $ExpectedInstanceId -notmatch '^i-[a-f0-9]+$' -or
+    $ExpectedVolumeId -notmatch '^vol-[a-f0-9]+$' -or
+    $ExpectedFilesystemUuid -notmatch '^[a-f0-9-]{36}$')) {
+    throw 'ResumeExisting requires the expected instance, data volume and existing filesystem UUID'
+}
 Import-Module (Join-Path $PSScriptRoot 'Staging.psm1') -Force
 function Invoke-Aws {
     param([string[]]$Arguments, [string]$AwsRegion = $Region)
@@ -36,13 +46,14 @@ $identity = Invoke-Aws -Arguments @('sts','get-caller-identity')
 if ($identity.Account -ne '245606545178') { throw 'Refusing AWS account other than 245606545178' }
 $release = Get-Content -LiteralPath $ReleaseFile -Raw | ConvertFrom-Json
 if ($release.release -notmatch '^[a-f0-9]{40}$' -or
-    $release.registry -ne '960607644670.dkr.ecr.ap-southeast-2.amazonaws.com' -or
-    $release.registryAccount -ne '960607644670' -or $release.registryRegion -ne 'ap-southeast-2' -or
+    $release.registry -ne '960607644670.dkr.ecr.us-east-1.amazonaws.com' -or
+    $release.registryAccount -ne '960607644670' -or $release.registryRegion -ne 'us-east-1' -or
     $release.api.repository -ne 'app/api' -or $release.web.repository -ne 'app/web' -or
     $release.postgres -notmatch '^postgres:17@sha256:[a-f0-9]{64}$') {
     throw 'Invalid release lock or unexpected registry'
 }
 foreach ($image in @($release.api, $release.web)) {
+    if ($image.runtimeDigest -notmatch '^sha256:[a-f0-9]{64}$') { throw 'Locked amd64 runtime digest required' }
     if ($image.digest -notmatch '^sha256:[a-f0-9]{64}$') { throw 'Immutable image digest required' }
 }
 if ($PasswordParameter -notmatch '^/grocery/staging/[a-zA-Z0-9/_-]+$') { throw 'Secret must use the Staging parameter namespace' }
@@ -71,12 +82,17 @@ $required = @(
     @{Action='ssm:GetParameter';Resource="arn:aws:ssm:us-east-1:245606545178:parameter$PasswordParameter"},
     @{Action='kms:Decrypt';Resource='*'},
     @{Action='ecr:GetAuthorizationToken';Resource='*'},
-    @{Action='ecr:BatchGetImage';Resource='arn:aws:ecr:ap-southeast-2:960607644670:repository/app/api'},
-    @{Action='ecr:GetDownloadUrlForLayer';Resource='arn:aws:ecr:ap-southeast-2:960607644670:repository/app/web'}
+    @{Action='ecr:BatchGetImage';Resource='arn:aws:ecr:us-east-1:960607644670:repository/app/api'},
+    @{Action='ecr:GetDownloadUrlForLayer';Resource='arn:aws:ecr:us-east-1:960607644670:repository/app/api'},
+    @{Action='ecr:BatchCheckLayerAvailability';Resource='arn:aws:ecr:us-east-1:960607644670:repository/app/api'},
+    @{Action='ecr:BatchGetImage';Resource='arn:aws:ecr:us-east-1:960607644670:repository/app/web'},
+    @{Action='ecr:GetDownloadUrlForLayer';Resource='arn:aws:ecr:us-east-1:960607644670:repository/app/web'},
+    @{Action='ecr:BatchCheckLayerAvailability';Resource='arn:aws:ecr:us-east-1:960607644670:repository/app/web'}
 )
 foreach ($permission in $required) {
     $simulation = Invoke-Aws -Arguments @('iam','simulate-principal-policy','--policy-source-arn',$roles[0].Arn,
-        '--action-names',$permission.Action,'--resource-arns',$permission.Resource)
+        '--action-names',$permission.Action,'--resource-arns',$permission.Resource,
+        '--context-entries',"ContextKeyName=aws:RequestedRegion,ContextKeyValues=$Region,ContextKeyType=string")
     if ($simulation.EvaluationResults[0].EvalDecision -ne 'allowed') { $issues.Add("LabRole identity permission not allowed: $($permission.Action)") }
 }
 foreach ($kind in @('api','web')) {
@@ -84,14 +100,22 @@ foreach ($kind in @('api','web')) {
     try {
         $details = Invoke-Aws -AwsRegion $release.registryRegion -Arguments @(
             'ecr','describe-images','--registry-id',$release.registryAccount,
-            '--repository-name',$image.repository,'--image-ids',"imageTag=$($release.release)")
+            '--repository-name',$image.repository,'--image-ids',"imageDigest=$($image.digest)")
         if (@($details.imageDetails).Count -ne 1 -or $details.imageDetails[0].imageDigest -ne $image.digest) {
-            throw "ECR digest does not match verified CI mirror for $kind"
+            throw "Selected immutable ECR digest missing or mismatched for $kind"
         }
         $pull = Invoke-Aws -AwsRegion $release.registryRegion -Arguments @(
             'ecr','batch-get-image','--registry-id',$release.registryAccount,
             '--repository-name',$image.repository,'--image-ids',"imageDigest=$($image.digest)")
         if (@($pull.images).Count -ne 1 -or @($pull.failures).Count -ne 0) { throw "ECR manifest pull failed for $kind" }
+        if ($pull.images[0].imageId.imageDigest -ne $image.digest) { throw "ECR returned wrong index digest for $kind" }
+        $null = Assert-StagingImageIndex -ManifestJson $pull.images[0].imageManifest -ExpectedDigest $image.digest -ExpectedRuntimeDigest $image.runtimeDigest
+        $child = Invoke-Aws -AwsRegion $release.registryRegion -Arguments @(
+            'ecr','batch-get-image','--registry-id',$release.registryAccount,
+            '--repository-name',$image.repository,'--image-ids',"imageDigest=$($image.runtimeDigest)")
+        if (@($child.images).Count -ne 1 -or @($child.failures).Count -ne 0 -or
+            $child.images[0].imageId.imageDigest -ne $image.runtimeDigest) { throw "Missing selected amd64 runtime manifest for $kind" }
+
     } catch { $issues.Add($_.Exception.Message) }
 }
 if ($issues.Count) { throw ("Staging preflight blocked before resource creation:`n" + ($issues -join "`n")) }
@@ -108,6 +132,10 @@ if ($existing.Count) {
         throw "Existing Staging stack is not ready: $($existing[0].StackStatus)"
     }
 }
+if ($ResumeExisting) {
+    if ($existing.Count -ne 1) { throw 'ResumeExisting requires an existing owned Staging stack' }
+    Write-Host 'ResumeExisting: retaining infrastructure; no CloudFormation change set will be created.'
+} else {
 $changeSetName = 'staging-' + [guid]::NewGuid().ToString('N')
 $parameters = @(
     @{ParameterKey='VpcId';ParameterValue=$VpcId},
@@ -143,10 +171,14 @@ if ($plan.Status -eq 'CREATE_COMPLETE') {
 } elseif ($changeType -eq 'UPDATE' -and $plan.StatusReason -match "didn't contain changes|No updates are to be performed") {
     $null = Invoke-Aws -Arguments @('cloudformation','delete-change-set','--stack-name',$StackName,'--change-set-name',$changeSetName)
 } else { throw 'Change set is not executable' }
+}
 $stack = (Invoke-Aws -Arguments @('cloudformation','describe-stacks','--stack-name',$StackName)).Stacks[0]
 $outputs = @{}
 foreach ($item in $stack.Outputs) { $outputs[$item.OutputKey] = $item.OutputValue }
 $instanceId = $outputs.InstanceId
+if ($ResumeExisting -and ($instanceId -ne $ExpectedInstanceId -or $outputs.DataVolumeId -ne $ExpectedVolumeId)) {
+    throw 'Existing Staging instance or volume differs from the explicit resume target'
+}
 if ($instanceId -eq 'i-02d58257bb276bbf5') { throw 'Refusing protected test instance' }
 $instance = (Invoke-Aws -Arguments @('ec2','describe-instances','--instance-ids',$instanceId)).Reservations[0].Instances[0]
 if (-not @($instance.Tags | Where-Object { $_.Key -eq 'aws:cloudformation:stack-id' -and $_.Value -eq $stack.StackId }) -or
@@ -165,17 +197,22 @@ $config = @{
     web="$($release.registry)/$($release.web.repository)@$($release.web.digest)"
     postgres=$release.postgres;ciRun=$release.ciRun
 }
+if ($ResumeExisting) { $config.existingFilesystemUuid = $ExpectedFilesystemUuid }
 $commands = [Collections.Generic.List[string]]::new()
 $commands.Add('set -euo pipefail')
 $commands.Add('exec 8>/run/grocery-staging-upload.lock; flock -n 8')
 $commands.Add('cloud-init status --wait >/dev/null')
 $commands.Add('install -d -m 700 /opt/grocery-staging')
-foreach ($name in @('deploy.sh','secrets.py','config.json')) {
+foreach ($name in @('deploy.sh','secrets.py','verify.py','config.json')) {
     $body = if ($name -eq 'config.json') { $config | ConvertTo-Json -Depth 10 } else { [IO.File]::ReadAllText((Join-Path $PSScriptRoot $name)) }
     $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($body.Replace("`r`n","`n")))
     $commands.Add("printf '%s' '$encoded' | base64 -d > /opt/grocery-staging/$name")
+    $hash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($body.Replace("`r`n","`n")))).ToLowerInvariant()
+    $commands.Add("printf '%s\n' '$hash  /opt/grocery-staging/$name' | sha256sum --check --status")
+
 }
 $commands.Add('chmod 600 /opt/grocery-staging/*')
+$commands.Add('sha256sum /opt/grocery-staging/deploy.sh /opt/grocery-staging/secrets.py /opt/grocery-staging/verify.py')
 $commands.Add('bash /opt/grocery-staging/deploy.sh')
 # Explicit Bash because AWS-RunShellScript invokes /bin/sh.
 $payload = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($commands -join "`n")))

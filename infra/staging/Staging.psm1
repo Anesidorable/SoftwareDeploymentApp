@@ -25,4 +25,25 @@ function Wait-StagingCommand {
     }
     throw 'SSM command polling timed out; no success. Remote command may still run; inspect status before retrying.'
 }
-Export-ModuleMember -Function Wait-StagingCommand
+function Assert-StagingImageIndex {
+    param(
+        [Parameter(Mandatory)][string]$ManifestJson,
+        [Parameter(Mandatory)][string]$ExpectedDigest,
+        [Parameter(Mandatory)][string]$ExpectedRuntimeDigest
+    )
+    $hash = [Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($ManifestJson))
+    $actual = 'sha256:' + [Convert]::ToHexString($hash).ToLowerInvariant()
+    if ($actual -ne $ExpectedDigest) { throw 'Index content does not match selected digest' }
+    $manifest = $ManifestJson | ConvertFrom-Json
+    if ($manifest.mediaType -notin @('application/vnd.oci.image.index.v1+json','application/vnd.docker.distribution.manifest.list.v2+json')) {
+        throw 'Expected an immutable image index'
+    }
+    $amd64 = @($manifest.manifests | Where-Object {
+        $_.platform.os -eq 'linux' -and $_.platform.architecture -eq 'amd64'
+    })
+    if ($amd64.Count -ne 1 -or $amd64[0].digest -ne $ExpectedRuntimeDigest) {
+        throw 'Selected index does not contain the locked linux/amd64 runtime image'
+    }
+    return $amd64[0].digest
+}
+Export-ModuleMember -Function Wait-StagingCommand, Assert-StagingImageIndex

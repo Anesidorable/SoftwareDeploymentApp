@@ -1,17 +1,26 @@
 {
-  "release": "8c6a325456f655a4820f7f13e8ce5c18a436fc4f",
-  "ciRun": "https://github.com/Anesidorable/SoftwareDeploymentApp/actions/runs/38702214896",
-  "registry": "960607644670.dkr.ecr.ap-southeast-2.amazonaws.com",
+  "release": "2aa5022552b88094760cee0bc76a7ecfb2163448",
+  "ciRun": "https://github.com/Anesidorable/SoftwareDeploymentApp/actions/runs/39379318432",
+  "registry": "960607644670.dkr.ecr.us-east-1.amazonaws.com",
   "registryAccount": "960607644670",
-  "registryRegion": "ap-southeast-2",
-  "evidence": "Successful main push CI; digests independently verified against its public GHCR mirrors on 2026-10-20. ECR equality and pull access MUST pass preflight; no registry fallback.",
+  "registryRegion": "us-east-1",
+  "evidence": "Explicitly selected by the user on 2026-10-20. Both Virginia OCI indexes exactly match commit-tagged GHCR mirrors; both SLSA v1 provenance statements identify this commit and CI run, whose API/web push jobs succeeded. Verify ECR by digest; no commit tag required and no latest fallback.",
   "api": {
     "repository": "app/api",
-    "digest": "sha256:8471d1eb92aa7e0f504917c5055638afa36750613bfb601d50133efc9ca62375"
+    "digest": "sha256:02d7d6e7a8f3fd5ba5f4742af3bc84a30377dad61c04e012510ae3857a843c2e",
+    "runtimeDigest": "sha256:dca7bf8f37b3f4b052e91ce082596052bc666d434172e6c1377ba53581d3b994"
   },
   "web": {
     "repository": "app/web",
-    "digest": "sha256:47a09a9be2a9c15633c57c4fc1f428b92a9e5275182bdfb775ce2ff8c5795858"
+    "digest": "sha256:7be399dd5f76166f3432c0ef26bb827b5513cfdf2be1ab4ecb721334aee90e59",
+    "runtimeDigest": "sha256:31dcaca5d85d08729ea91438fa272c23411b96ea9c0361189e309cba0ab5cb43"
   },
-  "postgres": "postgres:17@sha256:2d2b8998d31037bf721cfdf764d76ba74171b4fab3431b7f72c27c56ddbdf9e3"
+  "postgres": "postgres:17@sha256:2d2b8998d31037bf721cfdf764d76ba74171b4fab3431b7f72c27c56ddbdf9e3",
+  "previousSelection": {
+    "release": "8c6a325456f655a4820f7f13e8ce5c18a436fc4f",
+    "apiDigest": "sha256:8471d1eb92aa7e0f504917c5055638afa36750613bfb601d50133efc9ca62375",
+    "webDigest": "sha256:47a09a9be2a9c15633c57c4fc1f428b92a9e5275182bdfb775ce2ff8c5795858"
+  },
+  "selectionReason": "The previous locked indexes were absent in Virginia. The owner copied a newer coherent CI release. This is a deliberate release change; API amd64 content is unchanged, while web content and both indexes differ. No rebuild.",
+  "platform": "linux/amd64"
 }
