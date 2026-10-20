@@ -1,0 +1,267 @@
+# One environment of the release pipeline: Testing, Staging or Production.
+# The same template is deployed three times (stacks grocery-testing, grocery-staging, grocery-production)
+# by .github/workflows/release.yml. Production additionally gets CloudWatch alarms, logs and a dashboard.
+#
+# The instance only gets Docker and Docker Compose at boot. Each release is deployed by
+# infra/release/deploy.sh over AWS Systems Manager (no SSH port is opened).
+
+Parameters:
+  EnvName:
+    Type: String
+    AllowedValues: [testing, staging, production]
+  InstanceType:
+    Type: String
+    Default: t3.micro
+  RootVolumeSize:
+    Type: Number
+    Default: 20
+    Description: Root EBS volume size in GiB
+  AlertEmail:
+    Type: String
+    Default: 104809887@student.swin.edu.au
+    Description: Receives CloudWatch alarm emails (production only)
+
+Conditions:
+  IsProduction: !Equals [!Ref EnvName, production]
+
+Resources:
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+        - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
+      Policies:
+        # The database password lives in Parameter Store under /grocery/<env>/ only.
+        - PolicyName: environment-secrets
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [ssm:GetParameter, ssm:PutParameter]
+                Resource: !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/grocery/${EnvName}/*
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref InstanceRole
+
+  WebSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub Grocery ${EnvName} - HTTP only, no SSH (deployments use Systems Manager)
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - { Key: Name, Value: !Sub 'grocery-${EnvName}' }
+
+  Ec2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}}'
+      InstanceType: !Ref InstanceType
+      IamInstanceProfile: !Ref InstanceProfile
+      SecurityGroupIds:
+        - !GetAtt WebSecurityGroup.GroupId
+      MetadataOptions:
+        HttpTokens: required
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: !Ref RootVolumeSize
+            VolumeType: gp3
+            Encrypted: true
+      Tags:
+        - { Key: Name, Value: !Sub 'grocery-${EnvName}' }
+        - { Key: Environment, Value: !Ref EnvName }
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -euxo pipefail
+          dnf install -y docker
+          systemctl enable --now docker
+          mkdir -p /usr/libexec/docker/cli-plugins
+          curl -fsSL https://github.com/docker/compose/releases/download/v2.29.7/docker-compose-linux-x86_64 \
+            -o /usr/libexec/docker/cli-plugins/docker-compose
+          chmod +x /usr/libexec/docker/cli-plugins/docker-compose
+          docker compose version
+          # 1 GiB swap so a t3.micro has headroom for Postgres + API + Nginx
+          if [ ! -f /swapfile ]; then
+            dd if=/dev/zero of=/swapfile bs=1M count=1024
+            chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
+            echo '/swapfile none swap sw 0 0' >> /etc/fstab
+          fi
+          mkdir -p /opt/grocery/backups
+          echo "${EnvName}" > /opt/grocery/environment
+
+  ElasticIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      InstanceId: !Ref Ec2Instance
+      Tags:
+        - { Key: Name, Value: !Sub 'grocery-${EnvName}' }
+
+  # ---------- Production monitoring (Project Brief 4.1 / 5.1) ----------
+  AlarmTopic:
+    Condition: IsProduction
+    Type: AWS::SNS::Topic
+    Properties:
+      Subscription:
+        - Protocol: email
+          Endpoint: !Ref AlertEmail
+
+  HighCpuAlarm:
+    Condition: IsProduction
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: CPU above 80% for 5 minutes
+      Namespace: AWS/EC2
+      MetricName: CPUUtilization
+      Dimensions:
+        - Name: InstanceId
+          Value: !Ref Ec2Instance
+      Statistic: Average
+      Period: 60
+      EvaluationPeriods: 5
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlarmTopic]
+
+  HighMemoryAlarm:
+    Condition: IsProduction
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Memory above 85% for 5 minutes
+      Namespace: CWAgent
+      MetricName: mem_used_percent
+      Dimensions:
+        - Name: InstanceId
+          Value: !Ref Ec2Instance
+      Statistic: Average
+      Period: 60
+      EvaluationPeriods: 5
+      Threshold: 85
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlarmTopic]
+
+  DiskUsageAlarm:
+    Condition: IsProduction
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Root disk above 80% used
+      Namespace: CWAgent
+      MetricName: disk_used_percent
+      Dimensions:
+        - Name: InstanceId
+          Value: !Ref Ec2Instance
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlarmTopic]
+
+  HealthCheckAlarm:
+    Condition: IsProduction
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: /api/health failed twice in a row
+      Namespace: GroceryApp
+      MetricName: HealthCheckFailed
+      Dimensions:
+        - Name: InstanceId
+          Value: !Ref Ec2Instance
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 2
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: breaching
+      AlarmActions: [!Ref AlarmTopic]
+
+  ContainerLogGroup:
+    Condition: IsProduction
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /grocery/production/containers
+      RetentionInDays: 14
+
+  ServerErrorsAlarm:
+    Condition: IsProduction
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Five or more HTTP 5xx responses within five minutes
+      Namespace: GroceryApp
+      MetricName: Http5xxCount
+      Dimensions:
+        - Name: InstanceId
+          Value: !Ref Ec2Instance
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 5
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlarmTopic]
+
+  SlowResponsesAlarm:
+    Condition: IsProduction
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: 95th-percentile response time above 500 ms for five minutes
+      Namespace: GroceryApp
+      MetricName: RequestLatencyP95Ms
+      Dimensions:
+        - Name: InstanceId
+          Value: !Ref Ec2Instance
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 5
+      Threshold: 500
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlarmTopic]
+
+  MonitoringDashboard:
+    Condition: IsProduction
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: grocery-production
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {"type":"metric","x":0,"y":0,"width":12,"height":6,"properties":{"title":"CPU utilisation (%)","region":"${AWS::Region}","stat":"Average","period":60,"metrics":[["AWS/EC2","CPUUtilization","InstanceId","${Ec2Instance}"]]}},
+            {"type":"metric","x":12,"y":0,"width":12,"height":6,"properties":{"title":"Memory and disk used (%)","region":"${AWS::Region}","stat":"Average","period":60,"metrics":[["CWAgent","mem_used_percent","InstanceId","${Ec2Instance}"],["CWAgent","disk_used_percent","InstanceId","${Ec2Instance}"]]}},
+            {"type":"metric","x":0,"y":6,"width":12,"height":6,"properties":{"title":"Network traffic (bytes)","region":"${AWS::Region}","stat":"Sum","period":60,"metrics":[["AWS/EC2","NetworkIn","InstanceId","${Ec2Instance}"],["AWS/EC2","NetworkOut","InstanceId","${Ec2Instance}"]]}},
+            {"type":"metric","x":12,"y":6,"width":12,"height":6,"properties":{"title":"Disk I/O (bytes)","region":"${AWS::Region}","stat":"Sum","period":60,"metrics":[["CWAgent","diskio_read_bytes","InstanceId","${Ec2Instance}"],["CWAgent","diskio_write_bytes","InstanceId","${Ec2Instance}"]]}},
+            {"type":"metric","x":0,"y":12,"width":12,"height":6,"properties":{"title":"HTTP response time (ms)","region":"${AWS::Region}","stat":"Maximum","period":60,"metrics":[["GroceryApp","RequestLatencyP95Ms","InstanceId","${Ec2Instance}",{"label":"p95 of all requests"}],["GroceryApp","HealthLatencyMs","InstanceId","${Ec2Instance}",{"label":"/api/health"}]]}},
+            {"type":"metric","x":12,"y":12,"width":12,"height":6,"properties":{"title":"HTTP 5xx errors and failed health checks","region":"${AWS::Region}","stat":"Sum","period":60,"metrics":[["GroceryApp","Http5xxCount","InstanceId","${Ec2Instance}"],["GroceryApp","HealthCheckFailed","InstanceId","${Ec2Instance}"]]}},
+            {"type":"alarm","x":0,"y":18,"width":24,"height":3,"properties":{"title":"Alarm status","alarms":["${HighCpuAlarm.Arn}","${HighMemoryAlarm.Arn}","${DiskUsageAlarm.Arn}","${ServerErrorsAlarm.Arn}","${SlowResponsesAlarm.Arn}","${HealthCheckAlarm.Arn}"]}}
+          ]
+        }
+
+Outputs:
+  InstanceId:
+    Value: !Ref Ec2Instance
+  PublicIp:
+    Value: !Ref ElasticIP
+  Url:
+    Value: !Sub http://${ElasticIP}
+  DashboardUrl:
+    Condition: IsProduction
+    Value: !Sub https://${AWS::Region}.console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#dashboards:name=grocery-production

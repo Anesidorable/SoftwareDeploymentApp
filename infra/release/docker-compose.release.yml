@@ -1,0 +1,57 @@
+# Runtime stack for the Testing, Staging and Production servers.
+# deploy.sh writes the .env file next to this one with the image digests, release SHA and DB password.
+name: grocery
+
+services:
+  db:
+    container_name: db
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
+      POSTGRES_DB: myapp
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d myapp"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  api:
+    container_name: api
+    image: ${API_IMAGE:?API_IMAGE is required}
+    restart: unless-stopped
+    environment:
+      HOST: 0.0.0.0
+      PORT: "5000"
+      TRUST_PROXY: "1"
+      APP_ENV: ${APP_ENV}
+      GIT_SHA: ${GIT_SHA}
+      BUILD_TIME: ${BUILD_TIME}
+      DATABASE_URL: postgresql://app:${DB_PASSWORD}@db:5432/myapp
+    expose: ["5000"]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:5000/api/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 20s
+    depends_on:
+      db:
+        condition: service_healthy
+
+  web:
+    container_name: web
+    image: ${WEB_IMAGE:?WEB_IMAGE is required}
+    restart: unless-stopped
+    environment:
+      API_UPSTREAM: api:5000
+    ports: ["80:8080"]
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  pgdata:

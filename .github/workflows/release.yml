@@ -1,0 +1,265 @@
+name: Release Pipeline
+
+# Level 4: every merge to main that passes "Build Docker Image" (lint, API tests, image build)
+# is promoted automatically: Testing -> acceptance tests -> Staging -> verification -> Production.
+# The same image digests move through every environment; nothing is rebuilt after the build stage.
+on:
+  workflow_run:
+    workflows: ["Build Docker Image"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "Commit SHA on main to release again (default: latest main)"
+        required: false
+
+permissions:
+  contents: read
+  packages: read
+  id-token: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: ap-southeast-2
+  # Output "ReleaseRoleArn" of the grocery-release-bootstrap stack (infra/release/README.md)
+  AWS_ROLE_ARN: arn:aws:iam::918734735825:role/grocery-release-github
+  GHCR_IMAGE: ghcr.io/anesidorable/softwaredeploymentapp
+
+jobs:
+  promote:
+    name: Promote images to ECR
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.sha.outputs.sha }}
+      api_image: ${{ steps.push.outputs.api_image }}
+      web_image: ${{ steps.push.outputs.web_image }}
+    steps:
+      - name: Resolve the commit being released
+        id: sha
+        run: echo "sha=${{ inputs.sha || github.event.workflow_run.head_sha || github.sha }}" >> "$GITHUB_OUTPUT"
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Copy the tested images into ECR and pin them by digest
+        id: push
+        env:
+          SHA: ${{ steps.sha.outputs.sha }}
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          for name in api web; do
+            repo="grocery/$name"
+            if ! aws ecr describe-images --repository-name "$repo" --image-ids imageTag="$SHA" >/dev/null 2>&1; then
+              docker pull "$GHCR_IMAGE/$name:$SHA"
+              docker tag "$GHCR_IMAGE/$name:$SHA" "$REGISTRY/$repo:$SHA"
+              docker push "$REGISTRY/$repo:$SHA"
+            else
+              echo "$repo:$SHA already in ECR (tags are immutable), reusing it"
+            fi
+            digest=$(aws ecr describe-images --repository-name "$repo" --image-ids imageTag="$SHA" \
+              --query 'imageDetails[0].imageDigest' --output text)
+            echo "${name}_image=$REGISTRY/$repo@$digest" >> "$GITHUB_OUTPUT"
+          done
+
+      - name: Write the release manifest
+        env:
+          SHA: ${{ steps.sha.outputs.sha }}
+          API_IMAGE: ${{ steps.push.outputs.api_image }}
+          WEB_IMAGE: ${{ steps.push.outputs.web_image }}
+        run: |
+          jq -n --arg sha "$SHA" --arg api "$API_IMAGE" --arg web "$WEB_IMAGE" \
+            --arg run "$GITHUB_RUN_ID" --arg time "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            '{commit: $sha, api: $api, web: $web, workflowRun: $run, createdAt: $time}' > release-manifest.json
+          cat release-manifest.json
+          {
+            echo "### Release ${SHA:0:7}"
+            echo '```json'; cat release-manifest.json; echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-manifest-${{ steps.sha.outputs.sha }}
+          path: release-manifest.json
+          retention-days: 90
+
+  deploy-testing:
+    name: Deploy to Testing
+    needs: promote
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      url: ${{ steps.deploy.outputs.url }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.promote.outputs.sha }}
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - id: deploy
+        uses: ./.github/actions/deploy-env
+        with:
+          environment: testing
+          sha: ${{ needs.promote.outputs.sha }}
+          api-image: ${{ needs.promote.outputs.api_image }}
+          web-image: ${{ needs.promote.outputs.web_image }}
+
+  acceptance-tests:
+    name: Acceptance tests on Testing
+    needs: [promote, deploy-testing]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.promote.outputs.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Smoke test (health, version, CRUD against the Testing database)
+        run: node scripts/smoke-test.mjs "${{ needs.deploy-testing.outputs.url }}" "${{ needs.promote.outputs.sha }}"
+      - name: Install Playwright
+        working-directory: e2e
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+      - name: End-to-end tests (Playwright, Chromium)
+        working-directory: e2e
+        env:
+          BASE_URL: ${{ needs.deploy-testing.outputs.url }}
+        run: npx playwright test
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: playwright-report-${{ needs.promote.outputs.sha }}
+          path: e2e/playwright-report
+          retention-days: 30
+
+  deploy-staging:
+    name: Deploy to Staging
+    needs: [promote, acceptance-tests]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      url: ${{ steps.deploy.outputs.url }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.promote.outputs.sha }}
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - id: deploy
+        uses: ./.github/actions/deploy-env
+        with:
+          environment: staging
+          sha: ${{ needs.promote.outputs.sha }}
+          api-image: ${{ needs.promote.outputs.api_image }}
+          web-image: ${{ needs.promote.outputs.web_image }}
+
+  verify-staging:
+    name: Verify Staging (CRUD + load test)
+    needs: [promote, deploy-staging]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.promote.outputs.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Smoke test
+        run: node scripts/smoke-test.mjs "${{ needs.deploy-staging.outputs.url }}" "${{ needs.promote.outputs.sha }}"
+      - name: Load test - 20 users for 2 minutes (p95 <= 300 ms, errors < 1%)
+        run: |
+          set -o pipefail
+          node scripts/load-test.mjs "${{ needs.deploy-staging.outputs.url }}" 20 120 | tee load-test.txt
+      - name: Add load test result to the summary
+        if: always()
+        run: |
+          if [ -f load-test.txt ]; then
+            { echo "### Staging load test"; echo '```'; cat load-test.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: load-test-${{ needs.promote.outputs.sha }}
+          path: load-test.txt
+          retention-days: 30
+
+  deploy-production:
+    name: Deploy to Production
+    needs: [promote, verify-staging]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.promote.outputs.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - id: deploy
+        uses: ./.github/actions/deploy-env
+        with:
+          environment: production
+          sha: ${{ needs.promote.outputs.sha }}
+          api-image: ${{ needs.promote.outputs.api_image }}
+          web-image: ${{ needs.promote.outputs.web_image }}
+
+      - name: Configure monitoring (CloudWatch agent + metrics probe)
+        run: |
+          bash infra/release/ssm-run.sh "${{ steps.deploy.outputs.instance-id }}" "Monitoring setup" \
+            "curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/${{ needs.promote.outputs.sha }}/infra/monitoring/setup-monitoring.sh | bash"
+
+      - name: Verify production (health, version, CRUD)
+        run: node scripts/smoke-test.mjs "${{ steps.deploy.outputs.url }}" "${{ needs.promote.outputs.sha }}"
+
+      - name: Roll back to the previous release
+        if: failure()
+        run: |
+          INSTANCE_ID=$(aws cloudformation describe-stacks --stack-name grocery-production \
+            --query "Stacks[0].Outputs[?OutputKey=='InstanceId'].OutputValue" --output text 2>/dev/null || true)
+          if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "None" ]; then
+            echo "No production instance to roll back"; exit 0
+          fi
+          bash infra/release/ssm-run.sh "$INSTANCE_ID" "Rollback production" \
+            "bash /opt/grocery-deploy.sh rollback production"
+          echo "::warning::Production was rolled back to the previous release. This run stays failed."
+          echo "### :warning: Production rolled back to the previous release" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Production summary
+        if: success()
+        run: |
+          {
+            echo "### :rocket: Production is running ${{ needs.promote.outputs.sha }}"
+            echo "- Site: ${{ steps.deploy.outputs.url }}"
+            echo "- Dashboard: https://${AWS_REGION}.console.aws.amazon.com/cloudwatch/home?region=${AWS_REGION}#dashboards:name=grocery-production"
+          } >> "$GITHUB_STEP_SUMMARY"

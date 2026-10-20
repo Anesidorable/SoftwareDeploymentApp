@@ -1,10 +1,8 @@
 name: Deploy To Production
  
+# Superseded by release.yml (Testing -> Staging -> Production). Kept for manual use only,
+# so merges to main no longer deploy to this single server automatically.
 on:
-  workflow_run:
-    workflows: ["Build Docker Image"]
-    types: [completed]
-    branches: [main]
   workflow_dispatch:
     inputs:
       tag:
@@ -24,9 +22,7 @@ env:
 jobs:
   deploy:
     if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.event == 'push')
+      github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     concurrency:

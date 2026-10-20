@@ -5,9 +5,10 @@
   "scripts": {
     "start": "node index.js",
     "dev": "nodemon index.js",
-    "test": "node --test",
+    "test": "vitest run",
     "postinstall": "prisma skills sync || exit 0",
-    "contract:emit": "prisma contract emit"
+    "contract:emit": "prisma contract emit",
+    "test:coverage": "vitest run --coverage"
   },
   "keywords": [],
   "author": "",
@@ -15,15 +16,19 @@
   "description": "",
   "type": "module",
   "dependencies": {
-    "prisma": "^8.0.0-rc.22",
     "@prisma/client": "^7.10.0",
     "@prisma/orm-postgres": "^8.0.0-rc.17",
     "dotenv": "^18.0.7",
-    "express": "^5.2.1"
+    "express": "^5.2.1",
+    "pg": "^8.23.1",
+    "prisma": "^8.0.0-rc.22"
   },
   "devDependencies": {
     "@prisma/cli-engine": "^0.7.0",
     "@types/node": "^26.6.5",
-    "nodemon": "^3.1.14"
+    "@vitest/coverage-v8": "^5.0.5",
+    "nodemon": "^3.1.14",
+    "supertest": "^7.3.1",
+    "vitest": "^5.0.5"
   }
 }
