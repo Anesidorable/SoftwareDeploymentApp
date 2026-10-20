@@ -1,0 +1,17 @@
+{
+  "release": "8c6a325456f655a4820f7f13e8ce5c18a436fc4f",
+  "ciRun": "https://github.com/Anesidorable/SoftwareDeploymentApp/actions/runs/38702214896",
+  "registry": "960607644670.dkr.ecr.ap-southeast-2.amazonaws.com",
+  "registryAccount": "960607644670",
+  "registryRegion": "ap-southeast-2",
+  "evidence": "Successful main push CI; digests independently verified against its public GHCR mirrors on 2026-10-20. ECR equality and pull access MUST pass preflight; no registry fallback.",
+  "api": {
+    "repository": "app/api",
+    "digest": "sha256:8471d1eb92aa7e0f504917c5055638afa36750613bfb601d50133efc9ca62375"
+  },
+  "web": {
+    "repository": "app/web",
+    "digest": "sha256:47a09a9be2a9c15633c57c4fc1f428b92a9e5275182bdfb775ce2ff8c5795858"
+  },
+  "postgres": "postgres:17@sha256:2d2b8998d31037bf721cfdf764d76ba74171b4fab3431b7f72c27c56ddbdf9e3"
+}
