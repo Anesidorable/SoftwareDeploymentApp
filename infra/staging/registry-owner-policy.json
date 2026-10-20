@@ -1,0 +1,28 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "VirginiaStagingOperatorPreflight",
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": "arn:aws:iam::245606545178:role/voclabs"
+      },
+      "Action": [
+        "ecr:DescribeImages",
+        "ecr:BatchGetImage"
+      ]
+    },
+    {
+      "Sid": "VirginiaStagingRuntimePull",
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": "arn:aws:iam::245606545178:role/LabRole"
+      },
+      "Action": [
+        "ecr:BatchGetImage",
+        "ecr:GetDownloadUrlForLayer",
+        "ecr:BatchCheckLayerAvailability"
+      ]
+    }
+  ]
+}
