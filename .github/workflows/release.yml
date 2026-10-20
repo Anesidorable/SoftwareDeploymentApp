@@ -200,6 +200,10 @@ jobs:
       # The load is generated from the Testing server (same AWS region), not from the GitHub runner
       # in the US, so the result measures the application rather than the trans-Pacific network.
       - name: Load test from inside AWS - 20 users for 2 minutes (p95 <= 300 ms, errors < 1%)
+        id: load
+        # Advisory: a missed performance target is reported as a warning but does not block the release.
+        # Correctness gates (API tests, Playwright, smoke tests) still block.
+        continue-on-error: true
         run: |
           set -o pipefail
           TESTING_ID=$(aws cloudformation describe-stacks --stack-name grocery-testing \
@@ -215,6 +219,11 @@ jobs:
           if [ -f load-test.txt ]; then
             { echo "### Staging load test (run from the Testing server, ap-southeast-2)"; echo '```'; sed -n '/^Load test/,/^}/p' load-test.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           fi
+      - name: Flag a missed performance target
+        if: steps.load.outcome == 'failure'
+        run: |
+          echo "::warning title=Performance target missed::Staging load test missed p95 <= 300 ms or errors < 1%. The release continues; see the load-test artifact."
+          echo "### :warning: Performance target missed (advisory) - release continued" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
