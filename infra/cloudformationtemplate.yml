@@ -195,6 +195,46 @@ Resources:
       TreatMissingData: breaching
       AlarmActions: [!Ref AlarmTopic]
 
+  ContainerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /grocery/production/containers
+      RetentionInDays: 14
+
+  ServerErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Five or more HTTP 5xx responses within five minutes
+      Namespace: GroceryApp
+      MetricName: Http5xxCount
+      Dimensions:
+        - Name: InstanceId
+          Value: !Ref Ec2Instance
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 5
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlarmTopic]
+
+  SlowResponsesAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: 95th-percentile response time above 500 ms for five minutes
+      Namespace: GroceryApp
+      MetricName: RequestLatencyP95Ms
+      Dimensions:
+        - Name: InstanceId
+          Value: !Ref Ec2Instance
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 5
+      Threshold: 500
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlarmTopic]
+
   MonitoringDashboard:
     Type: AWS::CloudWatch::Dashboard
     Properties:
@@ -206,7 +246,9 @@ Resources:
             {"type":"metric","x":12,"y":0,"width":12,"height":6,"properties":{"title":"Memory and disk used (%)","region":"${AWS::Region}","stat":"Average","period":60,"metrics":[["CWAgent","mem_used_percent","InstanceId","${Ec2Instance}"],["CWAgent","disk_used_percent","InstanceId","${Ec2Instance}"]]}},
             {"type":"metric","x":0,"y":6,"width":12,"height":6,"properties":{"title":"Network traffic (bytes)","region":"${AWS::Region}","stat":"Sum","period":60,"metrics":[["AWS/EC2","NetworkIn","InstanceId","${Ec2Instance}"],["AWS/EC2","NetworkOut","InstanceId","${Ec2Instance}"]]}},
             {"type":"metric","x":12,"y":6,"width":12,"height":6,"properties":{"title":"Disk I/O (bytes)","region":"${AWS::Region}","stat":"Sum","period":60,"metrics":[["CWAgent","diskio_read_bytes","InstanceId","${Ec2Instance}"],["CWAgent","diskio_write_bytes","InstanceId","${Ec2Instance}"]]}},
-            {"type":"metric","x":0,"y":12,"width":24,"height":6,"properties":{"title":"HTTP response time of /api/health (ms)","region":"${AWS::Region}","stat":"Average","period":60,"metrics":[["GroceryApp","HealthLatencyMs","InstanceId","${Ec2Instance}"]]}}
+            {"type":"metric","x":0,"y":12,"width":12,"height":6,"properties":{"title":"HTTP response time (ms)","region":"${AWS::Region}","stat":"Maximum","period":60,"metrics":[["GroceryApp","RequestLatencyP95Ms","InstanceId","${Ec2Instance}",{"label":"p95 of all requests"}],["GroceryApp","HealthLatencyMs","InstanceId","${Ec2Instance}",{"label":"/api/health"}]]}},
+            {"type":"metric","x":12,"y":12,"width":12,"height":6,"properties":{"title":"HTTP 5xx errors and failed health checks","region":"${AWS::Region}","stat":"Sum","period":60,"metrics":[["GroceryApp","Http5xxCount","InstanceId","${Ec2Instance}"],["GroceryApp","HealthCheckFailed","InstanceId","${Ec2Instance}"]]}},
+            {"type":"alarm","x":0,"y":18,"width":24,"height":3,"properties":{"title":"Alarm status","alarms":["${HighCpuAlarm.Arn}","${HighMemoryAlarm.Arn}","${DiskUsageAlarm.Arn}","${ServerErrorsAlarm.Arn}","${SlowResponsesAlarm.Arn}","${HealthCheckAlarm.Arn}"]}}
           ]
         }
 
