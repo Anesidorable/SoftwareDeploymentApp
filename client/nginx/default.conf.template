@@ -1,3 +1,6 @@
+# Access log with response time, used by the production monitoring probe
+log_format timed '$remote_addr [$time_local] "$request" $status $body_bytes_sent rt=$request_time';
+
 map $http_x_forwarded_proto $forwarded_proto {
     default $scheme;
     https   https;
@@ -7,6 +10,7 @@ map $http_x_forwarded_proto $forwarded_proto {
 server {
     listen 8080;
     server_name _;
+    access_log /var/log/nginx/access.log timed;
 
     root /usr/share/nginx/html;
     index index.html;
