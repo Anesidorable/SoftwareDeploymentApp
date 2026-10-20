@@ -1,0 +1,111 @@
+# One-time setup for the release pipeline, deployed once by hand into the AWS account
+# that hosts Testing, Staging and Production (see infra/release/README.md).
+#
+# Creates:
+#   - the GitHub OIDC identity provider (skip with CreateOidcProvider=false if the account already has one)
+#   - the IAM role GitHub Actions assumes (short-lived credentials, main branch of this repo only)
+#   - the ECR repositories the release images are promoted into (immutable tags)
+
+Parameters:
+  GitHubRepo:
+    Type: String
+    Default: Anesidorable/SoftwareDeploymentApp
+    Description: owner/repo allowed to assume the release role
+  CreateOidcProvider:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: Set to false if token.actions.githubusercontent.com already exists in IAM > Identity providers
+
+Conditions:
+  MakeOidcProvider: !Equals [!Ref CreateOidcProvider, 'true']
+
+Resources:
+  GitHubOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Condition: MakeOidcProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList: [sts.amazonaws.com]
+      ThumbprintList: [6938fd4d98bab03faadb97b34396831e3780aea1]
+
+  ReleaseRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: grocery-release-github
+      Description: Assumed by the GitHub Actions release workflow through OIDC
+      MaxSessionDuration: 7200
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Sub arn:aws:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                token.actions.githubusercontent.com:sub: !Sub repo:${GitHubRepo}:ref:refs/heads/main
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSCloudFormationFullAccess
+        - arn:aws:iam::aws:policy/AmazonEC2FullAccess
+        - arn:aws:iam::aws:policy/AmazonSSMFullAccess
+        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPowerUser
+        - arn:aws:iam::aws:policy/CloudWatchFullAccess
+        - arn:aws:iam::aws:policy/AmazonSNSFullAccess
+        - arn:aws:iam::aws:policy/CloudWatchLogsFullAccess
+      Policies:
+        # CloudFormation creates each environment's instance role; only roles named grocery-* are allowed.
+        - PolicyName: manage-environment-instance-roles
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - iam:CreateRole
+                  - iam:DeleteRole
+                  - iam:GetRole
+                  - iam:TagRole
+                  - iam:UntagRole
+                  - iam:UpdateAssumeRolePolicy
+                  - iam:AttachRolePolicy
+                  - iam:DetachRolePolicy
+                  - iam:PutRolePolicy
+                  - iam:DeleteRolePolicy
+                  - iam:GetRolePolicy
+                  - iam:ListRolePolicies
+                  - iam:ListAttachedRolePolicies
+                  - iam:PassRole
+                  - iam:CreateInstanceProfile
+                  - iam:DeleteInstanceProfile
+                  - iam:GetInstanceProfile
+                  - iam:AddRoleToInstanceProfile
+                  - iam:RemoveRoleFromInstanceProfile
+                Resource:
+                  - !Sub arn:aws:iam::${AWS::AccountId}:role/grocery-*
+                  - !Sub arn:aws:iam::${AWS::AccountId}:instance-profile/grocery-*
+
+  ApiRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: grocery/api
+      ImageTagMutability: IMMUTABLE
+      ImageScanningConfiguration: { ScanOnPush: true }
+      LifecyclePolicy:
+        LifecyclePolicyText: '{"rules":[{"rulePriority":1,"description":"Keep the 10 most recent releases","selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":10},"action":{"type":"expire"}}]}'
+
+  WebRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: grocery/web
+      ImageTagMutability: IMMUTABLE
+      ImageScanningConfiguration: { ScanOnPush: true }
+      LifecyclePolicy:
+        LifecyclePolicyText: '{"rules":[{"rulePriority":1,"description":"Keep the 10 most recent releases","selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":10},"action":{"type":"expire"}}]}'
+
+Outputs:
+  ReleaseRoleArn:
+    Description: Put this ARN in .github/workflows/release.yml (AWS_ROLE_ARN)
+    Value: !GetAtt ReleaseRole.Arn
+  Registry:
+    Value: !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com

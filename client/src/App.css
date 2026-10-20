@@ -879,3 +879,11 @@
     display: none;
   }
 }
+
+.version-footer {
+  margin-top: 24px;
+  text-align: center;
+  font-size: 12px;
+  color: #8a8f98;
+  letter-spacing: 0.02em;
+}

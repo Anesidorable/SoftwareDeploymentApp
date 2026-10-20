@@ -6,12 +6,19 @@ on:
     paths:
       - 'server/**'
       - 'client/**'
-      - '.github/workflows/**'
+      - 'infra/**'
+      - 'scripts/**'
+      - 'e2e/**'
+      - '.github/**'
   pull_request:
     branches: [ "main" ]
     paths:
       - 'server/**'
       - 'client/**'
+      - 'infra/**'
+      - 'scripts/**'
+      - 'e2e/**'
+      - '.github/**'
 
 permissions:
   contents: read
@@ -23,7 +30,54 @@ env:
   ECR_REGISTRY: 960607644670.dkr.ecr.ap-southeast-2.amazonaws.com
 
 jobs:
+  # Unit + integration tests against a real PostgreSQL. Images are only built if these pass.
+  test:
+    name: API tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: app
+          POSTGRES_PASSWORD: test_password
+          POSTGRES_DB: myapp
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U app -d myapp"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://app:test_password@localhost:5432/myapp
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+      - run: npm ci
+      - run: npx prisma contract emit
+      - run: npx prisma db migrate
+      - name: Run tests with coverage (fails under 80%)
+        run: npm run test:coverage
+      - name: Coverage summary
+        if: always()
+        run: |
+          if [ -f coverage/coverage-summary.json ]; then
+            echo "### API test coverage" >> "$GITHUB_STEP_SUMMARY"
+            node -e "const t=require('./coverage/coverage-summary.json').total; for (const k of ['lines','statements','functions','branches']) console.log('- '+k+': '+t[k].pct+'%')" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: api-coverage-${{ github.sha }}
+          path: server/coverage
+          retention-days: 30
+
   build:
+    needs: test
     runs-on: ubuntu-latest
 
     strategy:

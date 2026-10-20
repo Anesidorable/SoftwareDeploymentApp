@@ -70,6 +70,15 @@ function App() {
   const [newQuantity, setNewQuantity] = useState(1)
   const [newCategory, setNewCategory] = useState('Produce')
   const [notice, setNotice] = useState('')
+  const [release, setRelease] = useState(null)
+
+  // Show which release is running, so each deployment is visible on the page.
+  useEffect(() => {
+    fetch('/api/version')
+      .then((response) => (response.ok ? response.json() : null))
+      .then(setRelease)
+      .catch(() => setRelease(null))
+  }, [])
 
   useEffect(() => {
     async function loadItems() {
@@ -541,6 +550,11 @@ function App() {
             )}
           </section>
 
+          <footer className="version-footer" data-testid="version-footer">
+            {release
+              ? `Version ${String(release.version).slice(0, 7)} · ${release.env}`
+              : 'Version unavailable'}
+          </footer>
         </div>
       </main>
     </div>

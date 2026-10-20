@@ -1,0 +1,93 @@
+name: Deploy release to an environment
+description: Creates/updates the environment's CloudFormation stack, starts the instance if stopped, and deploys the release over SSM.
+
+inputs:
+  environment:
+    description: testing, staging or production
+    required: true
+  sha:
+    description: Commit SHA being released
+    required: true
+  api-image:
+    description: API image reference pinned by digest
+    required: true
+  web-image:
+    description: Web image reference pinned by digest
+    required: true
+
+outputs:
+  url:
+    description: Public URL of the environment
+    value: ${{ steps.stack.outputs.url }}
+  instance-id:
+    description: EC2 instance ID
+    value: ${{ steps.stack.outputs.instance_id }}
+
+runs:
+  using: composite
+  steps:
+    - name: Create or update the ${{ inputs.environment }} stack
+      shell: bash
+      run: |
+        aws cloudformation deploy \
+          --stack-name "grocery-${{ inputs.environment }}" \
+          --template-file infra/release/environment.yml \
+          --capabilities CAPABILITY_IAM \
+          --parameter-overrides EnvName=${{ inputs.environment }} \
+          --no-fail-on-empty-changeset
+
+    - name: Read stack outputs
+      id: stack
+      shell: bash
+      run: |
+        out() {
+          aws cloudformation describe-stacks --stack-name "grocery-${{ inputs.environment }}" \
+            --query "Stacks[0].Outputs[?OutputKey=='$1'].OutputValue" --output text
+        }
+        echo "instance_id=$(out InstanceId)" >> "$GITHUB_OUTPUT"
+        echo "url=$(out Url)" >> "$GITHUB_OUTPUT"
+
+    - name: Start the instance if it was stopped to save cost
+      shell: bash
+      env:
+        INSTANCE_ID: ${{ steps.stack.outputs.instance_id }}
+      run: |
+        STATE=$(aws ec2 describe-instances --instance-ids "$INSTANCE_ID" \
+          --query 'Reservations[0].Instances[0].State.Name' --output text)
+        echo "Instance state: $STATE"
+        if [ "$STATE" = "stopped" ] || [ "$STATE" = "stopping" ]; then
+          aws ec2 wait instance-stopped --instance-ids "$INSTANCE_ID"
+          aws ec2 start-instances --instance-ids "$INSTANCE_ID" >/dev/null
+        fi
+        aws ec2 wait instance-running --instance-ids "$INSTANCE_ID"
+
+    - name: Wait until Systems Manager can reach the instance
+      shell: bash
+      env:
+        INSTANCE_ID: ${{ steps.stack.outputs.instance_id }}
+      run: |
+        PING=None
+        for _ in $(seq 1 60); do
+          PING=$(aws ssm describe-instance-information --filters "Key=InstanceIds,Values=$INSTANCE_ID" \
+            --query "InstanceInformationList[0].PingStatus" --output text 2>/dev/null || echo None)
+          [ "$PING" = "Online" ] && break
+          sleep 10
+        done
+        echo "SSM ping status: $PING"
+        test "$PING" = "Online"
+
+    - name: Deploy ${{ inputs.sha }} to ${{ inputs.environment }}
+      shell: bash
+      env:
+        RAW: https://raw.githubusercontent.com/${{ github.repository }}/${{ inputs.sha }}/infra/release
+      run: |
+        bash infra/release/ssm-run.sh "${{ steps.stack.outputs.instance_id }}" \
+          "Deploy ${{ inputs.sha }} to ${{ inputs.environment }}" \
+          "cloud-init status --wait || true" \
+          "curl -fsSL $RAW/deploy.sh -o /opt/grocery-deploy.sh" \
+          "bash /opt/grocery-deploy.sh deploy ${{ inputs.environment }} ${{ inputs.sha }} ${{ inputs.api-image }} ${{ inputs.web-image }} $RAW/docker-compose.release.yml"
+        {
+          echo "### ${{ inputs.environment }} deployed"
+          echo "- URL: ${{ steps.stack.outputs.url }}"
+          echo "- Commit: \`${{ inputs.sha }}\`"
+        } >> "$GITHUB_STEP_SUMMARY"

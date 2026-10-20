@@ -4,3 +4,6 @@ npm-debug.log
 .git
 Dockerfile
 generated
+coverage
+test
+vitest.config.js
