@@ -15,11 +15,12 @@
   "description": "",
   "type": "module",
   "dependencies": {
-    "prisma": "^8.0.0-rc.22",
     "@prisma/client": "^7.10.0",
     "@prisma/orm-postgres": "^8.0.0-rc.17",
     "dotenv": "^18.0.7",
-    "express": "^5.2.1"
+    "express": "^5.2.1",
+    "pg": "^8.23.1",
+    "prisma": "^8.0.0-rc.22"
   },
   "devDependencies": {
     "@prisma/cli-engine": "^0.7.0",
