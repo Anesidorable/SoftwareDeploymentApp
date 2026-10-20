@@ -1,0 +1,123 @@
+{
+  "account": "245606545178",
+  "region": "us-east-1",
+  "stackId": "arn:aws:cloudformation:us-east-1:245606545178:stack/grocery-staging/8964d510-cc76-11f1-824a-0affc7ccc753",
+  "instanceId": "i-00e4de616bb12dc49",
+  "dataVolumeId": "vol-0669434c058070f39",
+  "url": "http://54.159.81.113",
+  "release": "2aa5022552b88094760cee0bc76a7ecfb2163448",
+  "secretMetadata": {
+    "name": "/grocery/staging/db-password",
+    "version": 2,
+    "type": "SecureString",
+    "valuePrinted": false
+  },
+  "uploadedScriptSHA256": {
+    "verify.py": "331df4481d29380bc32789005b889ccacc2912e4e120da738f0d06dd546017fa",
+    "secrets.py": "64e8cbab7f08148c0c6b4d3feec71bb25c13e1f9acd4d9df60d3b97a433dfeb1",
+    "deploy.sh": "e9855ef1a6cd28ae1f1575880a37bd61061c360d646012e704d96775d7a807c4"
+  },
+  "ssmCommands": {
+    "diskInspection": {
+      "commandId": "c00c2795-fde2-4bde-a2ab-de3cdaa1c670",
+      "responseCode": 0,
+      "status": "Success"
+    },
+    "deployment": {
+      "commandId": "7c153e58-7cfd-4607-98de-2ccce25901d4",
+      "responseCode": 0,
+      "status": "Success"
+    },
+    "seed": {
+      "commandId": "8f46f0a1-fe26-4ac7-ad15-b1edafc5239e",
+      "responseCode": 0,
+      "status": "Success"
+    },
+    "containerRecreation": {
+      "commandId": "63e1b44d-8f5c-47bb-8c05-22c5448818cf",
+      "responseCode": 0,
+      "status": "Success"
+    },
+    "afterReboot": {
+      "commandId": "9395dcda-fb32-4e6b-844e-14d00a7f5e73",
+      "responseCode": 0,
+      "status": "Success"
+    },
+    "cleanup": {
+      "commandId": "d498f6c8-f417-49e9-be55-fad63da19c8c",
+      "responseCode": 0,
+      "status": "Success"
+    }
+  },
+  "runtime": {
+    "release": "2aa5022552b88094760cee0bc76a7ecfb2163448",
+    "containers": [
+      {
+        "name": "staging-db",
+        "image": "postgres:17@sha256:2d2b8998d31037bf721cfdf764d76ba74171b4fab3431b7f72c27c56ddbdf9e3",
+        "imageId": "sha256:327daa8fae7178d61f93142f146b098467b345e10997b9eb79f63bd58e5c8f3c",
+        "health": "healthy",
+        "restartCount": 0
+      },
+      {
+        "name": "staging-api",
+        "image": "960607644670.dkr.ecr.us-east-1.amazonaws.com/app/api@sha256:02d7d6e7a8f3fd5ba5f4742af3bc84a30377dad61c04e012510ae3857a843c2e",
+        "imageId": "sha256:d95b014d02d19efa6e00eb5d5a2bc5336bfc3e8fc98fe26b5a65e6be847a4577",
+        "health": "healthy",
+        "restartCount": 0
+      },
+      {
+        "name": "staging-web",
+        "image": "960607644670.dkr.ecr.us-east-1.amazonaws.com/app/web@sha256:7be399dd5f76166f3432c0ef26bb827b5513cfdf2be1ab4ecb721334aee90e59",
+        "imageId": "sha256:5f467a1d2a59ba2404c69254ad770296dc001b71e07472ea8f3fcbd46081890d",
+        "health": "healthy",
+        "restartCount": 0
+      }
+    ],
+    "dataMount": "/dev/nvme1n1 8402756a-0f61-4f56-88ba-cb6efb1e3ded",
+    "frontend": "ok",
+    "frontendAssets": 2,
+    "api": {
+      "status": "ok",
+      "env": "staging",
+      "version": "2aa5022552b88094760cee0bc76a7ecfb2163448"
+    },
+    "databaseQuery": "ok",
+    "databaseRows": 0,
+    "preMigrationBackup": "present"
+  },
+  "persistence": {
+    "phase": "cleanup",
+    "result": "passed",
+    "recordId": 1,
+    "containerRecreation": "passed",
+    "reboot": "passed",
+    "bootBefore": "0946086e-6a0b-4777-81fe-4d71bac19fc6",
+    "bootAfter": "24251d3f-aa5e-4639-b3ab-3a2f3470bdd9",
+    "filesystemUuid": "8402756a-0f61-4f56-88ba-cb6efb1e3ded",
+    "release": "2aa5022552b88094760cee0bc76a7ecfb2163448"
+  },
+  "external": {
+    "databaseRows": 0,
+    "testRecordAbsent": true,
+    "httpStatus": 200,
+    "health": {
+      "status": "ok",
+      "env": "staging",
+      "version": "2aa5022552b88094760cee0bc76a7ecfb2163448"
+    }
+  },
+  "preservation": {
+    "cloudFormationChangesSkipped": true,
+    "sameInstance": true,
+    "sameVolume": true,
+    "sameFilesystemUuid": true,
+    "formattingProhibitedByResumeMode": true
+  },
+  "untested": [
+    "stop/start cycle",
+    "volume restore or reattachment",
+    "disaster recovery",
+    "schema rollback"
+  ]
+}

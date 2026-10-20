@@ -1,0 +1,97 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Isolated grocery Staging host; reuses existing IAM and VPC resources.
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+  AvailabilityZone:
+    Type: AWS::EC2::AvailabilityZone::Name
+  InstanceProfileName:
+    Type: String
+    Default: LabInstanceProfile
+  InstanceType:
+    Type: String
+    Default: t3.small
+    AllowedValues: [t3.small, t3.medium]
+  WebCidr:
+    Type: String
+    Default: 0.0.0.0/0
+  DataVolumeSize:
+    Type: Number
+    Default: 20
+    MinValue: 20
+  AmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+Resources:
+  WebSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Grocery Staging web only; administration through SSM
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: !Ref WebCidr
+      Tags:
+        - {Key: Name, Value: grocery-staging-web}
+        - {Key: Environment, Value: Staging}
+  Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref AmiId
+      InstanceType: !Ref InstanceType
+      IamInstanceProfile: !Ref InstanceProfileName
+      MetadataOptions:
+        HttpTokens: required
+        HttpPutResponseHopLimit: 1
+      NetworkInterfaces:
+        - DeviceIndex: '0'
+          AssociatePublicIpAddress: true
+          SubnetId: !Ref SubnetId
+          GroupSet: [!Ref WebSecurityGroup]
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: 20
+            VolumeType: gp3
+            Encrypted: true
+            DeleteOnTermination: true
+      Tags:
+        - {Key: Name, Value: grocery-staging}
+        - {Key: Environment, Value: Staging}
+      UserData:
+        Fn::Base64: |
+          #!/bin/bash
+          set -euo pipefail
+          dnf install -y docker python3
+          command -v aws >/dev/null || dnf install -y awscli-2
+          systemctl enable --now docker
+          systemctl enable --now amazon-ssm-agent
+  DataVolume:
+    Type: AWS::EC2::Volume
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      AvailabilityZone: !Ref AvailabilityZone
+      Size: !Ref DataVolumeSize
+      VolumeType: gp3
+      Encrypted: true
+      Tags:
+        - {Key: Name, Value: grocery-staging-data}
+        - {Key: Environment, Value: Staging}
+  DataAttachment:
+    Type: AWS::EC2::VolumeAttachment
+    Properties:
+      Device: /dev/sdf
+      InstanceId: !Ref Instance
+      VolumeId: !Ref DataVolume
+Outputs:
+  InstanceId:
+    Value: !Ref Instance
+  DataVolumeId:
+    Value: !Ref DataVolume
+  WebUrl:
+    Value: !Sub http://${Instance.PublicIp}
