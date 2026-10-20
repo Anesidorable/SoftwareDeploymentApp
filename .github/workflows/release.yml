@@ -191,17 +191,29 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
       - name: Smoke test
         run: node scripts/smoke-test.mjs "${{ needs.deploy-staging.outputs.url }}" "${{ needs.promote.outputs.sha }}"
-      - name: Load test - 20 users for 2 minutes (p95 <= 300 ms, errors < 1%)
+      # The load is generated from the Testing server (same AWS region), not from the GitHub runner
+      # in the US, so the result measures the application rather than the trans-Pacific network.
+      - name: Load test from inside AWS - 20 users for 2 minutes (p95 <= 300 ms, errors < 1%)
         run: |
           set -o pipefail
-          node scripts/load-test.mjs "${{ needs.deploy-staging.outputs.url }}" 20 120 | tee load-test.txt
+          TESTING_ID=$(aws cloudformation describe-stacks --stack-name grocery-testing \
+            --query "Stacks[0].Outputs[?OutputKey=='InstanceId'].OutputValue" --output text)
+          RAW=https://raw.githubusercontent.com/${{ github.repository }}/${{ needs.promote.outputs.sha }}
+          bash infra/release/ssm-run.sh "$TESTING_ID" "Load test against Staging" \
+            "curl -fsSL $RAW/scripts/load-test.mjs -o /tmp/load-test.mjs" \
+            "docker run --rm -v /tmp/load-test.mjs:/load-test.mjs:ro node:22-alpine node /load-test.mjs ${{ needs.deploy-staging.outputs.url }} 20 120" \
+            | tee load-test.txt
       - name: Add load test result to the summary
         if: always()
         run: |
           if [ -f load-test.txt ]; then
-            { echo "### Staging load test"; echo '```'; cat load-test.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+            { echo "### Staging load test (run from the Testing server, ap-southeast-2)"; echo '```'; sed -n '/^Load test/,/^}/p' load-test.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           fi
       - uses: actions/upload-artifact@v4
         if: always()
