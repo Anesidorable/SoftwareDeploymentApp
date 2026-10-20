@@ -27,6 +27,10 @@ Parameters:
   Registry:
     Type: String
     Default: 960607644670.dkr.ecr.ap-southeast-2.amazonaws.com
+  AlertEmail:
+    Type: String
+    Default: 104809887@student.swin.edu.au
+    Description: Email address that receives CloudWatch alarm notifications
 
 Resources:
   InstanceRole:
@@ -42,6 +46,7 @@ Resources:
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
         - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+        - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
 
   InstanceProfile:
     Type: AWS::IAM::InstanceProfile
@@ -115,8 +120,100 @@ Resources:
     Properties:
       InstanceId: !Ref Ec2Instance
 
+  AlarmTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      Subscription:
+        - Protocol: email
+          Endpoint: !Ref AlertEmail
+
+  HighCpuAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: CPU above 80% for 5 minutes
+      Namespace: AWS/EC2
+      MetricName: CPUUtilization
+      Dimensions:
+        - Name: InstanceId
+          Value: !Ref Ec2Instance
+      Statistic: Average
+      Period: 60
+      EvaluationPeriods: 5
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlarmTopic]
+
+  HighMemoryAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Memory above 85% for 5 minutes
+      Namespace: CWAgent
+      MetricName: mem_used_percent
+      Dimensions:
+        - Name: InstanceId
+          Value: !Ref Ec2Instance
+      Statistic: Average
+      Period: 60
+      EvaluationPeriods: 5
+      Threshold: 85
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlarmTopic]
+
+  DiskUsageAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Root disk above 80% used
+      Namespace: CWAgent
+      MetricName: disk_used_percent
+      Dimensions:
+        - Name: InstanceId
+          Value: !Ref Ec2Instance
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlarmTopic]
+
+  HealthCheckAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: /api/health failed twice in a row
+      Namespace: GroceryApp
+      MetricName: HealthCheckFailed
+      Dimensions:
+        - Name: InstanceId
+          Value: !Ref Ec2Instance
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 2
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: breaching
+      AlarmActions: [!Ref AlarmTopic]
+
+  MonitoringDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: grocery-production
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {"type":"metric","x":0,"y":0,"width":12,"height":6,"properties":{"title":"CPU utilisation (%)","region":"${AWS::Region}","stat":"Average","period":60,"metrics":[["AWS/EC2","CPUUtilization","InstanceId","${Ec2Instance}"]]}},
+            {"type":"metric","x":12,"y":0,"width":12,"height":6,"properties":{"title":"Memory and disk used (%)","region":"${AWS::Region}","stat":"Average","period":60,"metrics":[["CWAgent","mem_used_percent","InstanceId","${Ec2Instance}"],["CWAgent","disk_used_percent","InstanceId","${Ec2Instance}"]]}},
+            {"type":"metric","x":0,"y":6,"width":12,"height":6,"properties":{"title":"Network traffic (bytes)","region":"${AWS::Region}","stat":"Sum","period":60,"metrics":[["AWS/EC2","NetworkIn","InstanceId","${Ec2Instance}"],["AWS/EC2","NetworkOut","InstanceId","${Ec2Instance}"]]}},
+            {"type":"metric","x":12,"y":6,"width":12,"height":6,"properties":{"title":"Disk I/O (bytes)","region":"${AWS::Region}","stat":"Sum","period":60,"metrics":[["CWAgent","diskio_read_bytes","InstanceId","${Ec2Instance}"],["CWAgent","diskio_write_bytes","InstanceId","${Ec2Instance}"]]}},
+            {"type":"metric","x":0,"y":12,"width":24,"height":6,"properties":{"title":"HTTP response time of /api/health (ms)","region":"${AWS::Region}","stat":"Average","period":60,"metrics":[["GroceryApp","HealthLatencyMs","InstanceId","${Ec2Instance}"]]}}
+          ]
+        }
+
 Outputs:
   InstanceId:
     Value: !Ref Ec2Instance
   PublicIp:
     Value: !Ref ElasticIP
+  DashboardUrl:
+    Value: !Sub https://${AWS::Region}.console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#dashboards:name=grocery-production

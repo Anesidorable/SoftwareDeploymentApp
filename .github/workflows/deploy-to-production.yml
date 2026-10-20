@@ -92,7 +92,7 @@ jobs:
             --instance-ids "$INSTANCE_ID" \
             --document-name AWS-RunShellScript \
             --comment "Deploy $IMAGE_TAG" \
-            --parameters "{\"commands\":[\"cloud-init status --wait || true\",\"/opt/app/deploy.sh $IMAGE_TAG\"]}" \
+            --parameters "{\"commands\":[\"cloud-init status --wait || true\",\"/opt/app/deploy.sh $IMAGE_TAG\",\"curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/$IMAGE_TAG/infra/monitoring/setup-monitoring.sh | bash\"]}" \
             --query Command.CommandId --output text)
             
           STATUS=Pending
@@ -110,6 +110,10 @@ jobs:
             --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" \
             --query '[StandardOutputContent, StandardErrorContent]' --output text
 
+          if [ "$STATUS" != "Success" ]; then
+            echo "Deployment failed with status: $STATUS" >&2
+            exit 1
+          fi
           echo "Deployment successful"
 
 
