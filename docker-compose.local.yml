@@ -1,0 +1,7 @@
+services:
+  api:
+    image: softwaredeploymentapp-api:local
+    build: ./server
+  web:
+    image: softwaredeploymentapp-web:local
+    build: ./client
